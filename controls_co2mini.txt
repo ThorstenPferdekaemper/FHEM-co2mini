@@ -1,1 +1,4 @@
-UPD 2015-10-08_04:33:10 9197 FHEM/38_co2mini.pm
+DIR FHEM/lib
+DIR FHEM/lib/co2mini
+UPD 2022-01-30_19:58:43 10965 FHEM/38_co2mini.pm
+UPD 2022-01-30_22:05:21 6464 FHEM/lib/co2mini/co2mini_server.pl
