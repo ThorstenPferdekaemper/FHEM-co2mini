@@ -3,10 +3,10 @@ Module to get CO2 readings from a co2mini device (sold under various names), wit
 
 ## Installation 
 In FHEM do this:
-`update add https://raw.githubusercontent.com/ThorstenPferdekaemper/FHEM-co2mini/master/controls_co2mini.txt`
-`update all co2mini`
+- `update add https://raw.githubusercontent.com/ThorstenPferdekaemper/FHEM-co2mini/master/controls_co2mini.txt`
+- `update all co2mini`
 Wait for it to finish, including commandref rebuild.
-`shutdown restart`
+- `shutdown restart`
 Check local commandref for co2mini.
 
 ## References
