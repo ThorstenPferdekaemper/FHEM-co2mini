@@ -227,6 +227,32 @@ Print the help and exit
 
 The device file, like /dev/co2mini0, which is the default
 
+=item B<-port>
+
+The port the server listens to
+
+=item B<-interval>
+
+Minimum interval in seconds between two measurements
+
+=item B<-verbose>
+
+Verbosity or log level
+
+=over 1
+
+=item 0 -> nothing
+
+=item 1 -> Startup/Shutdown/Errors
+
+=item 2 -> Client add/remove
+
+=item 3 -> Sent data
+
+=item 4 -> Received data 
+
+=back
+
 =back
 
 =cut

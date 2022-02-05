@@ -1,6 +1,25 @@
 
 package main;
 
+
+sub
+co2mini_Initialize($)
+{
+  my ($hash) = @_;
+
+  $hash->{DefFn}    = "co2mini::Define";
+  $hash->{ReadyFn}  = "co2mini::Ready";
+  $hash->{ReadFn}   = "co2mini::Read";
+  $hash->{UndefFn}  = "co2mini::Undefine";
+  $hash->{AttrFn}   = "co2mini::Attr";
+  $hash->{AttrList} = "disable:0,1 showraw:0,1 updateTimeout device serverControl:fhem,external serverIp serverPort ".
+                      $readingFnAttributes;
+}
+
+#####################################
+
+package co2mini;
+
 use strict;
 use warnings;
 
@@ -8,159 +27,108 @@ use POSIX;
 use Fcntl;
 use Errno;
 
-# Key retrieved from /dev/random, guaranteed to be random ;-)
-my $key = "u/R\xf9R\x7fv\xa5";
 
-sub
-co2mini_Initialize($)
+sub Define($$)
 {
-  my ($hash) = @_;
-
-  $hash->{DefFn}    = "co2mini_Define";
-  $hash->{ReadyFn}  = "co2mini_Ready";
-  $hash->{ReadFn}   = "co2mini_Read";
-  $hash->{UndefFn}  = "co2mini_Undefine";
-  $hash->{AttrFn}   = "co2mini_Attr";
-  $hash->{AttrList} = "disable:0,1 showraw:0,1 updateTimeout ".
-                      $readingFnAttributes;
+	my ($hash, $def) = @_;
+	my @a = split("[ \t][ \t]*", $def);
+	my $name = $a[0];
+	my $dev;
+	my $addr;
+	my $control = 'fhem';
+  
+	if(@a < 2) {
+		#Nothing given, assume defaults
+		$dev = '/dev/co2mini0';
+		$addr = '127.0.0.1:41042';
+	}elsif($a[2] =~ /^\//){
+		#Device given, assume we control the server
+		$dev = $a[2];
+		$addr = '127.0.0.1:41042';
+	}else{
+		#Server address given, assume server is controlled externally
+		$addr = $a[2];	
+		$control = 'external';	
+	};	
+	my ($ip,$port) = split(/:/,$addr);
+	$main::attr{$name}{serverControl} = $control;
+	$main::attr{$name}{serverIp} = $ip;
+	$main::attr{$name}{serverPort} = $port;
+	$main::attr{$name}{device} = $dev;
+  
+	$hash->{NAME} = $name;
+	$hash->{DeviceName} = $addr;  #Needed for DevIo
+  
+	Disconnect($hash);
+	$main::readyfnlist{"$name.$addr"} = $hash;
+  
+	return undef;
 }
 
-#####################################
 
-sub
-co2mini_Define($$)
-{
-  my ($hash, $def) = @_;
-
-  my @a = split("[ \t][ \t]*", $def);
-
-  return "Usage: define <name> co2mini [devicenode or ip:port]"  if(@a < 2);
-
-  my $name = $a[0];
-  my $dev = $a[2] // "/dev/co2mini0";
-  
-  $hash->{NAME} = $name;
-  $hash->{DeviceName} = $dev;
-  
-  co2mini_Disconnect($hash);
-  
-  $readyfnlist{"$name.$dev"} = $hash;
-  
-  return undef;
-}
-
-sub 
-co2mini_OnConnect($)
+sub OnConnect($)
 {
   my ($hash) = @_;
   my $name   = $hash->{NAME};
-  Log3 $name, 3, "$name: co2mini_OnConnect";
+  main::Log3 $name, 3, "$name: OnConnect";
 
   $hash->{LAST_RECV} = time();
-  co2mini_QueueConnectionCheck($hash);
+  queueConnectionCheck($hash);
 }
 
-sub
-co2mini_Ready($)
-{
-  my ($hash) = @_;
-  my $name = $hash->{NAME};
+sub Ready($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
 
-  return undef if( AttrVal($name, "disable", 0 ) == 1 );
+    return undef if main::AttrVal($name, "disable", 0 ) == 1;
 
-  # Reasonably low certainty that something:onlynumbers is a device node, but could be network address
-  if($hash->{DeviceName} =~ /^(.*):(\d+)$/) {
-    $hash->{helper}{mode} = "net";
+    main::Log3 $name, 3, "Ready"; 
+
+	#Start server
+	$hash->{nextOpenDelay} = 10;
+	serverStart($hash) if main::AttrVal($name, "serverControl", "fhem") eq "fhem";
     $hash->{helper}{buf} = "";
-    return DevIo_OpenDev($hash, 1, "co2mini_OnConnect");
-  } else {
-	  
-	Log3 $name, 3, "Ready";    
-	  
-	delete $hash->{HANDLE};  
-    sysopen($hash->{HANDLE}, $hash->{DeviceName}, O_RDWR | O_APPEND | O_NONBLOCK) or return undef;
-	#	"Error opening " . $hash->{DeviceName};
-
-    # Result of printf("0x%08X\n", HIDIOCSFEATURE(9)); in C
-    my $HIDIOCSFEATURE_9 = 0xC0094806;
-
-    # Send a FEATURE Set_Report with our key
-    ioctl($hash->{HANDLE}, $HIDIOCSFEATURE_9, "\x00".$key) or return undef;
-	# "Error establishing connection to " . $hash->{DeviceName};
-    
-    $hash->{helper}{mode} = "dev";
-    $hash->{FD} = fileno($hash->{HANDLE});
-    $selectlist{"$name"} = $hash;
-	delete($readyfnlist{$name.'.'.$hash->{DeviceName}});
-	
-	readingsSingleUpdate($hash,"state",'connected', 1);
-	co2mini_OnConnect($hash);
-  } 
-
-  return undef;
+    return main::DevIo_OpenDev($hash, 1, "co2mini::OnConnect");
 }
 
-sub
-co2mini_Disconnect($)
+sub Disconnect($)
 {
   my ($hash) = @_;
   my $name   = $hash->{NAME};
   
-  if (ReadingsVal($name, "state", "") eq "opened" || ReadingsVal($name, "state", "") eq "connected") {
-    if($hash->{helper}{mode} eq "net") {
-      DevIo_CloseDev($hash);
-    } elsif($hash->{helper}{mode} eq "dev") {
-      delete $selectlist{"$name"};
-      delete $hash->{FD};
-
-      close($hash->{HANDLE});
-      delete $hash->{HANDLE};
-    }
+  #Avoid starting again immediately
+  delete $main::readyfnlist{$name.'.'.$hash->{DeviceName}};
+    
+  if (main::ReadingsVal($name, "state", "") eq "opened") {
+      main::DevIo_CloseDev($hash);
   }
+  
+  #If we control the server, then shut this down as well
+	if(main::AttrVal($name, "serverControl", "fhem") eq "fhem") {
+		serverStop($hash);
+	};  
 
-  readingsSingleUpdate($hash,"state",'disconnected', 1);
+  main::readingsSingleUpdate($hash,"state",'disconnected', 1);
 }
 
 
-# Input: string key, string data
-# Output: array of integers result
-sub
-co2mini_decrypt($$)
-{
-  my @key = map { ord } split //, shift;
-  my @data = map { ord } split //, shift;
-  my @offset = (0x84,  0x47,  0x56,  0xD6,  0x07,  0x93,  0x93,  0x56);
-  my @shuffle = (2, 4, 0, 7, 1, 6, 5, 3);
-  
-  my @phase1 = map { $data[$_] } @shuffle;
-  
-  my @phase2 = map { $phase1[$_] ^ $key[$_] } (0 .. 7);
-  
-  my @phase3 = map { ( ($phase2[$_] >> 3) | ($phase2[ ($_-1+8)%8 ] << 5) ) & 0xff; } (0 .. 7);
-  
-  my @result = map { (0x100 + $phase3[$_] - $offset[$_]) & 0xff; } (0 .. 7);
-  
-  return @result;
-}
 
-
-sub
-co2mini_UpdateData($$@)
+sub updateData($$@)
 {
   my ($hash, $showraw, @data) = @_;
   my $name = $hash->{NAME};
 
-  Log3 $name, 5, "co2mini data received " . join(" ", @data);
+  main::Log3 $name, 5, "co2mini data received " . join(" ", @data);
   if($#data < 4) {
-    Log3 $name, 3, "co2mini incoming data too short";
+    main::Log3 $name, 3, "co2mini incoming data too short";
     return;
   }
   elsif($data[4] != 0xd) {
-    Log3 $name, 3, "co2mini unexpected byte 5";
+    main::Log3 $name, 3, "co2mini unexpected byte 5";
     return;
   }
   elsif((($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
-    Log3 $name, 3, "co2mini checksum error";
+    main::Log3 $name, 3, "co2mini checksum error";
     return;
   }
 
@@ -168,56 +136,43 @@ co2mini_UpdateData($$@)
   my $value = $val_hi << 8 | $val_lo;
     
   if($item == 0x50) {
-    readingsBulkUpdate($hash, "co2", $value);
+    main::readingsBulkUpdate($hash, "co2", $value);
     $hash->{LAST_RECV} = time();
   } elsif($item == 0x42) {
-    readingsBulkUpdate($hash, "temperature", $value/16.0 - 273.15);
+    main::readingsBulkUpdate($hash, "temperature", $value/16.0 - 273.15);
 	$hash->{LAST_RECV} = time();
   } elsif($item == 0x44) {
-    readingsBulkUpdate($hash, "humidity", $value/100.0);
+    main::readingsBulkUpdate($hash, "humidity", $value/100.0);
 	$hash->{LAST_RECV} = time();
   }
   if($showraw) {
-    readingsBulkUpdate($hash, sprintf("raw_%02X", $item), $value);
+    main::readingsBulkUpdate($hash, sprintf("raw_%02X", $item), $value);
   }
 }
 
-sub
-co2mini_Read($)
+sub Read($)
 {
   my ($hash) = @_;
   my $name   = $hash->{NAME};
   my ($buf, $readlength);
 
-  my $showraw = AttrVal($name, "showraw", 0);
+  my $showraw = main::AttrVal($name, "showraw", 0);
 
-  readingsBeginUpdate($hash);
+  main::readingsBeginUpdate($hash);
     
-  if($hash->{helper}{mode} eq "net") {
-    $buf = DevIo_SimpleRead($hash);
+  $buf = main::DevIo_SimpleRead($hash);
 
-    $readlength = length $buf;
-    if(defined($buf) || ($readlength > 0)) {
-      $hash->{LAST_RECV} = time();
-      $hash->{helper}{buf} .= $buf;
-      while ($hash->{helper}{buf} =~ /^(.{4,}\x0d)/s) {
-        my @data = map { ord } split //, $1;
-        substr($hash->{helper}{buf}, 0, $#data+1) = '';
-
-        co2mini_UpdateData($hash, $showraw, @data);
-      }
-    } else {
-      Log3 $name, 1, "co2mini network error or disconnected: $!";
+  $readlength = length $buf;
+  if(defined($buf) || ($readlength > 0)) {
+    $hash->{LAST_RECV} = time();
+    $hash->{helper}{buf} .= $buf;
+    while ($hash->{helper}{buf} =~ /^(.{4,}\x0d)/s) {
+      my @data = map { ord } split //, $1;
+      substr($hash->{helper}{buf}, 0, $#data+1) = '';
+      updateData($hash, $showraw, @data);
     }
-  } elsif($hash->{helper}{mode} eq "dev") {
-    while ( defined($readlength = sysread($hash->{HANDLE}, $buf, 8)) and $readlength == 8 ) {
-      # decrypt fix PFE	
-      # my @data = co2mini_decrypt($key, $buf);
-	  my @data = map { ord } split //, $buf;
-    
-      co2mini_UpdateData($hash, $showraw, @data);
-    
-    }
+  } else {
+    main::Log3 $name, 1, "co2mini network error or disconnected: $!";
   }
 
   if(!defined($readlength)) {
@@ -226,89 +181,190 @@ co2mini_Read($)
     } else {
 		#This only seems to happen if the connection is broken. Let's try
 		#to restart	
-        Log3 $name, 1, "co2mini device error or disconnected: $!";
-		DevIo_Disconnected($hash);
+        main::Log3 $name, 1, "co2mini device error or disconnected: $!";
+		Disconnect($hash);
+		#main::DevIo_Disconnected($hash);
 		my $dev = $hash->{DeviceName};
-		delete $selectlist{"$name.$dev"};
+		$main::readyfnlist{"$name.$dev"} = $hash;
+		#delete $main::selectlist{"$name.$dev"};
 		#Setting state "disconnected" does not create an event in DevIo
-		readingsSingleUpdate($hash,"state",'disconnected', 1);
+		main::readingsSingleUpdate($hash,"state",'disconnected', 1);
     }
-  } elsif($hash->{helper}{mode} eq "dev" && $readlength != 8) {
-    Log3 $name, 3, "co2mini incomplete data received, shouldn't happen, ignored";
   }
 
-  readingsEndUpdate($hash, 1);
+  main::readingsEndUpdate($hash, 1);
 }
 
-sub
-co2mini_Undefine($$)
-{
+
+sub Undefine($$) {
   my ($hash, $arg) = @_;
-
-  RemoveInternalTimer($hash);
-
-  co2mini_Disconnect($hash);
-
+  main::RemoveInternalTimer($hash);
+  Disconnect($hash);
   return undef;
 }
 
-sub
-co2mini_Attr($$$)
-{
+sub Attr($$$) {
   my ($cmd, $name, $attrName, $attrVal) = @_;
 
+    my $hash = $main::defs{$name};
+
   if( $attrName eq "disable" ) {
-    my $hash = $defs{$name};
+
     if( $cmd eq "set" && $attrVal ne "0" ) {
-      co2mini_Disconnect($hash);
+      Disconnect($hash);
     } else {
       my $dev = $hash->{DeviceName};
-      $readyfnlist{"$name.$dev"} = $hash;
+      $main::readyfnlist{"$name.$dev"} = $hash;
     }
   }
-
-  return;
+  
+	return undef unless $attrName =~ /^(device|serverControl|serverIp|serverPort)$/;
+	
+	#Seems that we need to restart the server and the connection	
+	my $serverIp = $main::attr{$name}{serverIp};
+	my $serverPort = $main::attr{$name}{serverPort};
+	if($attrName eq 'serverIp') {
+		if($cmd eq "set") {
+			$serverIp = $attrVal;
+		}else{
+			$serverIp = '127.0.0.1';
+		};
+	}elsif($attrName eq 'serverPort') {
+		if($cmd eq "set") {
+			$serverPort = $attrVal;
+		}else{
+			$serverPort = '41042';
+		};
+	};	
+		
+	Disconnect($hash);	
+	$hash->{DeviceName} = $serverIp.':'.$serverPort;		
+	$main::readyfnlist{$name.'.'.$hash->{DeviceName}} = $hash;
+	
+	return undef;
 }
 
-sub co2mini_QueueConnectionCheck($) {
+
+sub queueConnectionCheck($) {
   my ($hash) = @_;
   my $name = $hash->{NAME};
   
-  return if(($hash->{helper}{mode} eq "net") && (ReadingsVal($name, "state", "") ne "opened"));
-  return if(($hash->{helper}{mode} eq "dev") && (ReadingsVal($name, "state", "") ne "connected"));
+  return if(main::ReadingsVal($name, "state", "") ne "opened");
   
-  my $time = AttrVal($name,'updateTimeout',120);
+  my $time = main::AttrVal($name,'updateTimeout',120);
    
-  RemoveInternalTimer($hash);
-  InternalTimer(time() + $time, "co2mini_CheckConnection", $hash, 0);
+  main::RemoveInternalTimer($hash);
+  main::InternalTimer(time() + $time, "co2mini::CheckConnection", $hash, 0);
 }
 
-sub 
-co2mini_CheckConnection($) {
+
+sub CheckConnection($) {
   my ($hash) = @_;
   my $name = $hash->{NAME};
 
-  Log3 $name, 3, "co2mini_CheckConnection";
+  main::Log3 $name, 3, "CheckConnection";
  
-  if (ReadingsVal($name, "state", "") ne "opened" && ReadingsVal($name, "state", "") ne "connected") {
-    return undef;
-  }
+  return undef unless main::ReadingsVal($name, "state", "") eq "connected";
 
   my $lastRecvDiff = (time() - $hash->{LAST_RECV});
-  my $updateInt = AttrVal($name,'updateTimeout',120);
+  my $updateInt = main::AttrVal($name,'updateTimeout',120);
   
   # give it 20% tolerance. sticking hard to updateInt might fail if the fhem timer gets delayed for some seconds
   if ($lastRecvDiff > ($updateInt * 1.2)) {
-    Log3 $name, 3, "co2mini_CheckConnection: Connection lost! Last data from sensor received $lastRecvDiff s ago";
-    DevIo_Disconnected($hash);
+    main::Log3 $name, 3, "CheckConnection: Connection lost! Last data from sensor received $lastRecvDiff s ago";
+    main::DevIo_Disconnected($hash);
 	#Setting state "disconnected" does not create an event in DevIo
-	readingsSingleUpdate($hash,"state",'disconnected', 1);
+	main::readingsSingleUpdate($hash,"state",'disconnected', 1);
     return undef;
   }
-  Log3 $name, 4, "Connection still alive. Last data from CO2mini received $lastRecvDiff s ago";
+  main::Log3 $name, 4, "Connection still alive. Last data from co2mini received $lastRecvDiff s ago";
   
-  co2mini_QueueConnectionCheck($hash);
+  queueConnectionCheck($hash);
 }
+
+
+sub updateServerCommandLine($) {
+	my ($hash) = @_;
+	
+	my $name = $hash->{NAME};
+	my $device = main::AttrVal($name, "device", "/dev/co2mini0" );
+	my $port = main::AttrVal($name, "serverPort", "41042" );
+	my $baseDir = main::AttrVal('global', "modpath", "/opt/fhem" );
+	my $commandLine = 'perl '.$baseDir.'/FHEM/lib/co2mini/co2mini_server.pl '
+		.'-device='.$device.' -port='.$port;
+	$hash->{commandLine} = $commandLine;
+}
+
+
+sub serverGetPid($$) {
+	my ($hash, $commandLine) = @_;
+	my $retVal = 0;
+	
+	my $ps = 'ps axwwo pid,args | grep "' . $commandLine . '" | grep -v grep';
+	my @result = `$ps`;
+	foreach my $psResult (@result) {
+        $psResult =~ /(^[\t ]*[0-9]*)\s/;
+		if ($psResult) {
+			$psResult =~ /(^.*)\s.*perl.*/;
+			$retVal = $1;
+			last;
+		}
+	}
+	
+	return $retVal;
+}
+
+
+sub serverStart($) {
+	my ($hash) = @_;
+	
+	delete $hash->{ServerPID};
+	
+	updateServerCommandLine($hash);
+	my $pid = serverGetPid($hash, $hash->{commandLine});
+	# Is a process with this command line already running? If yes then use this.
+	if($pid && kill(0, $pid)) {
+		main::Log3($hash, 1, 'Server already running with PID ' . $pid. '. We are using this process.');
+		$hash->{ServerPID} = $pid;
+		#InternalTimer(gettimeofday() + 0.1, 'HM485_LAN_openDev', $hash, 0);		
+		return 'Server already running. (Re)Connected to PID '.$pid;
+	};		
+	#...otherwise try to start server
+	system($hash->{commandLine} . '&');
+	main::Log3($hash, 3, 'Start server with command line: ' . $hash->{commandLine});
+	$pid = serverGetPid($hash, $hash->{commandLine});
+	if(!$pid) {
+		return 'Server could not be started';
+	}
+	$hash->{ServerPID} = $pid;
+	main::Log3($hash, 3, 'Serverd was started with PID: ' . $pid);
+	$hash->{ServerSTATE} = 'started';
+	return 'Server started with PID '.$pid;
+}
+
+
+sub serverStop($) {
+	my ($hash) = @_;	
+	my $name = $hash->{NAME};
+	
+	return undef unless $hash->{ServerPID};
+	
+	my $pid = $hash->{ServerPID};
+
+	# Is there a process with the pid?
+	if(!kill(0, $pid)) {
+		main::Log3($name, 1, 'There is no server process with PID ' . $pid . '.');	
+		return undef;
+	};	
+	if(!kill('TERM', $pid)) {
+		main::Log3($name, 1, 'Can\'t terminate server with PID ' . $pid . '.');
+		return undef;
+	};	
+	$hash->{ServerSTATE} = 'stopped';
+	delete($hash->{ServerPID});
+	main::Log3($name, 3, 'HM485d with PID ' . $pid . ' was terminated.');
+	return undef;
+};
 
 1;
 
