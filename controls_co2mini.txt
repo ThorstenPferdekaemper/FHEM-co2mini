@@ -1,5 +1,5 @@
 DIR FHEM/lib
 DIR FHEM/lib/co2mini
-UPD 2022-02-05_22:07:33 12402 FHEM/38_co2mini.pm
+UPD 2022-02-06_22:19:54 13391 FHEM/38_co2mini.pm
 UPD 2022-01-28_21:49:30 216 FHEM/lib/co2mini/90-co2mini.rules
-UPD 2022-02-05_22:08:00 6806 FHEM/lib/co2mini/co2mini_server.pl
+UPD 2022-02-06_22:20:17 6806 FHEM/lib/co2mini/co2mini_server.pl

@@ -1,4 +1,7 @@
 
+#Thanks to henryk (@FHEM-Forum) for the original version of this module 
+#and a few more who have added bits and pieces here and there.
+
 package main;
 
 
@@ -12,7 +15,7 @@ co2mini_Initialize($)
   $hash->{ReadFn}   = "co2mini::Read";
   $hash->{UndefFn}  = "co2mini::Undefine";
   $hash->{AttrFn}   = "co2mini::Attr";
-  $hash->{AttrList} = "disable:0,1 showraw:0,1 updateTimeout device serverControl:fhem,external serverIp serverPort ".
+  $hash->{AttrList} = "disable:0,1 updateTimeout device serverControl:fhem,external serverIp serverPort ".
                       $readingFnAttributes;
 }
 
@@ -378,27 +381,18 @@ sub serverStop($) {
   These are available under a variety of different branding, but all register as a USB HID device
   with a vendor and product ID of 04d9:a052.
   For photos and further documentation on the reverse engineering process see
-  <a href="https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor">Reverse-Engineering a low-cost USB CO₂ monitor</a>.<br><br>
+  <a href="https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor">Reverse-Engineering a low-cost USB CO2 monitor</a>.<br><br>
 
-  Alternatively you can use a remote sensor with the <tt>co2mini_server.pl</tt> available at <a href="https://github.com/henryk/fhem-co2mini">https://github.com/henryk/fhem-co2mini</a>.
-  This script needs to be started with two arguments: the device node of the co2mini device and a port number to listen on. It will then listen on this port and accept connections from clients.
-  Clients get a stream of decrypted messages from the CO2 monitor (that is: 5 bytes up to and including the 0x0D each).
-  When configuring the FHEM module to connect to a remote <tt>co2mini_server.pl</tt>, simply supply <tt>address:port</tt> instead of the device node.<br><br>
+  Alternatively you can use a remote sensor with the <tt>co2mini_server.pl</tt> available in the FHEM base directory (usually /opt/fhem) under FHEM/lib/co2mini. Check <tt>perl co2mini_server.pl -help</tt> for possible arguments. It will listen to a given port and accept connections from clients.
+  When configuring the FHEM module to connect to a remote <tt>co2mini_server.pl</tt>, simply supply <tt>address:port</tt> instead of the device node.<br>
 
   Notes:
   <ul>
-    <li>FHEM, or the user running <tt>co2mini_server.pl</tt>, has to have permissions to open the device. To configure this with udev, put a file named <tt>90-co2mini.rules</tt>
-        into <tt>/etc/udev/rules.d</tt> with this content:
-<pre>ACTION=="remove", GOTO="co2mini_end"
-
-SUBSYSTEMS=="usb", KERNEL=="hidraw*", ATTRS{idVendor}=="04d9", ATTRS{idProduct}=="a052", GROUP="plugdev", MODE="0660", SYMLINK+="co2mini%n", GOTO="co2mini_end"
-
-LABEL="co2mini_end"
-</pre> where <tt>plugdev</tt> would be a group that your process is in.</li>
+    <li>FHEM, or the user running <tt>co2mini_server.pl</tt>, has to have permissions to open the device. To configure this with udev, you can copy the file in <tt>FHEM/lib/co2mini/90-co2mini.rules</tt> to <tt>/etc/udev/rules.d</tt>
+	</li>
   </ul><br>
 
-  <a name="co2mini_Define"></a>
-  <b>Define</b>
+  <a name="co2mini-define"><b>Define</b></a>
   <ul>
     <code>define &lt;name&gt; co2mini [devicenode or address:port]</code><br>
     <br>
@@ -408,29 +402,45 @@ LABEL="co2mini_end"
 
     Examples:
     <ul>
+	<li>
       <code>define co2 co2mini</code><br>
-    </ul>
-    Example (network):
-    <ul>
+	  This means that the device is directly connected to the same server and the device name is /dev/co2mini0.
+	</li>
+	<li>
       <code>define co2 co2mini raspberry:23231</code><br>
-    </ul>
-    (also: on the host named <tt>raspberry</tt> start a command like <tt>co2mini_server.pl /dev/co2mini0 23231</tt>)
+	  This connects to a server with the name "raspberry" where the co2mini server listens to port 23231. I.e. the server has been started with <tt>perl co2mini_server.pl -port=23231</tt>
+	</li>  
   </ul><br>
 
-  <a name="co2mini_Readings"></a>
-  <b>Readings</b>
-  <dl><dt>co2</dt><dd>CO2 measurement from the device, in ppm</dd>
-    <dt>temperature</dt><dd>temperature measurement from the device, in °C</dd>
-    <dt>humidity</dt><dd>humidity measurement from the device, in % (may not be available on your device)</dd>
+  <a id="co2mini-readings"><b>Readings</b></a>
+  <dl>
+  <dt>co2</dt><dd>CO2 measurement from the device, in ppm</dd>
+  <dt>temperature</dt><dd>Temperature measurement from the device, in °C</dd>
+  <dt>humidity</dt><dd>Humidity measurement from the device, in % (This may not be available on your device.)</dd>
   </dl>
 
-  <a name="co2mini_Attr"></a>
-  <b>Attributes</b>
+  <a id="co2mini-attr"><b>Attributes</b></a>
   <ul>
-    <li>disable<br>
-      1 -> disconnect</li>
-    <li>showraw<br>
-      1 -> show raw data as received from the device in readings of the form raw_XX</li>
+    <li><a id="co2mini-attr-disable">disable</a><br>
+      If set to 1, the device is disconnected.
+	</li>
+    <li><a id="co2mini-attr-updateTimeout">updateTimeout</a><br>
+	If there is no update from the co2mini server after <tt>updateTimeout</tt> seconds, the module disconnects and connects again. The default value is 120 seconds.
+	</li>
+	<li><a id="co2mini-attr-device">device</a><br>
+	This is the device node, like /dev/co2mini0. It only needs to be set if FHEM controls the co2mini server. Also see the attribute <tt>serverControl</tt>.
+	</li>
+	   <li><a id="co2mini-attr-serverControl">serverControl</a><br>
+	   If this attribute is set to "fhem", then FHEM controls the co2mini server. This means that it is assumed that the sensor is directly connected to the FHEM server. The co2mini module then automatically starts the co2mini server and also connects to it.<br>
+	   If this attribute is set to "external", then the co2mini module expects that the co2mini server is already running on the same server or on a remote server. In the latter case, the attribute <tt>serverIp</tt> has to be set accordingly. 
+	</li>
+	<li><a id="co2mini-attr-serverIp">serverIp</a><br>
+	   This is the address of the computer where the co2mini server is running on.
+	</li>
+	   <li><a id="co2mini-attr-serverPort">serverPort</a><br>
+	   This is the port the co2mini server listens to. 
+	</li>
+
   </ul>
 </ul>
 
