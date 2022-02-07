@@ -97,22 +97,24 @@ sub mainloop {
                 my $buf;
                 my $readlength = sysread($deviceconn, $buf, 8);
                 return "Could not read from device" if $readlength != 8;
-			
+				
+				log2(4,"Received data from $device");
+				
+				my @data = map { ord } split //, $buf;
+                if($data[4] != 0xd or (($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
+					#Maybe this is an older sensor with encryption. Try this...
+					@data = co2mini_decrypt($key, $buf);
+					#Still broken?
+					if($data[4] != 0xd or (($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
+						return "co2mini wrong data format received or checksum error";
+					};
+                };		
+				
 				#Ignore stuff we cannot interpret
 				#42 - Temperature
 				#44 - Humidity
 				#50 - CO2
-				next unless($buf =~ m/^[\x42\x44\x50]/);
-				
-				log2(4,"Received data from $device");
-				
-				# decrypt fix PFE	
-				# my @data = co2mini_decrypt($key, $buf);
-				my @data = map { ord } split //, $buf;
-				
-                if($data[4] != 0xd or (($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
-                    return "co2mini wrong data format received or checksum error";
-                }		
+				next unless($data[0] == 0x42 or $data[0] == 0x44 or $data[0] == 0x50);
 				
 				#Check/store send interval by message type
 				$now = time();
