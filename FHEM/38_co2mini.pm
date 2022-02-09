@@ -15,7 +15,7 @@ co2mini_Initialize($)
   $hash->{ReadFn}   = "co2mini::Read";
   $hash->{UndefFn}  = "co2mini::Undefine";
   $hash->{AttrFn}   = "co2mini::Attr";
-  $hash->{AttrList} = "disable:0,1 updateTimeout device serverControl:fhem,external serverIp serverPort ".
+  $hash->{AttrList} = "disable:0,1 updateTimeout device serverControl:fhem,external serverIp serverPort serverStartDelay ".
                       $readingFnAttributes;
 }
 
@@ -85,13 +85,24 @@ sub Ready($) {
 
     return undef if main::AttrVal($name, "disable", 0 ) == 1;
 
-    main::Log3 $name, 3, "Ready"; 
+    main::Log3 $name, 4, "$name: Ready"; 
 
 	#Start server
-	$hash->{nextOpenDelay} = 10;
-	serverStart($hash) if main::AttrVal($name, "serverControl", "fhem") eq "fhem";
     $hash->{helper}{buf} = "";
-    return main::DevIo_OpenDev($hash, 1, "co2mini::OnConnect");
+	if(main::AttrVal($name, "serverControl", "fhem") eq "fhem") {
+		serverStart($hash);
+		return undef unless $hash->{ServerStartTime};
+		my $timeToConnect = main::AttrVal($name, "serverStartDelay", 3 ) - time() + $hash->{ServerStartTime};
+		if($timeToConnect < 0) {
+			$hash->{nextOpenDelay} = 10;
+			return main::DevIo_OpenDev($hash, 1, "co2mini::OnConnect");
+		}else{
+			main::Log3 $name, 4, "$name: Waiting ".$timeToConnect." seconds to connect"; 
+			return undef;
+		};	
+	}else{	
+        return main::DevIo_OpenDev($hash, 1, "co2mini::OnConnect");
+	};	
 }
 
 sub Disconnect($)
@@ -121,17 +132,17 @@ sub updateData($$@)
   my ($hash, $showraw, @data) = @_;
   my $name = $hash->{NAME};
 
-  main::Log3 $name, 5, "co2mini data received " . join(" ", @data);
+  main::Log3 $name, 5, "$name: data received " . join(" ", @data);
   if($#data < 4) {
-    main::Log3 $name, 3, "co2mini incoming data too short";
+    main::Log3 $name, 3, "$name: incoming data too short";
     return;
   }
   elsif($data[4] != 0xd) {
-    main::Log3 $name, 3, "co2mini unexpected byte 5";
+    main::Log3 $name, 3, "$name: unexpected byte 5";
     return;
   }
   elsif((($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
-    main::Log3 $name, 3, "co2mini checksum error";
+    main::Log3 $name, 3, "$name: checksum error";
     return;
   }
 
@@ -175,7 +186,7 @@ sub Read($)
       updateData($hash, $showraw, @data);
     }
   } else {
-    main::Log3 $name, 1, "co2mini network error or disconnected: $!";
+    main::Log3 $name, 1, "$name: network error or disconnected: $!";
   }
 
   if(!defined($readlength)) {
@@ -184,7 +195,7 @@ sub Read($)
     } else {
 		#This only seems to happen if the connection is broken. Let's try
 		#to restart	
-        main::Log3 $name, 1, "co2mini device error or disconnected: $!";
+        main::Log3 $name, 1, "$name: device error or disconnected: $!";
 		Disconnect($hash);
 		#main::DevIo_Disconnected($hash);
 		my $dev = $hash->{DeviceName};
@@ -225,7 +236,9 @@ sub Attr($$$) {
 	
 	#Seems that we need to restart the server and the connection	
 	my $serverIp = $main::attr{$name}{serverIp};
+	$serverIp = '127.0.0.1' unless $serverIp;
 	my $serverPort = $main::attr{$name}{serverPort};
+	$serverPort = '41042' unless $serverPort;
 	if($attrName eq 'serverIp') {
 		if($cmd eq "set") {
 			$serverIp = $attrVal;
@@ -265,22 +278,22 @@ sub CheckConnection($) {
   my ($hash) = @_;
   my $name = $hash->{NAME};
 
-  main::Log3 $name, 3, "CheckConnection";
+  main::Log3 $name, 4, "$name: CheckConnection";
  
-  return undef unless main::ReadingsVal($name, "state", "") eq "connected";
+  return undef unless main::ReadingsVal($name, "state", "") eq "opened";
 
   my $lastRecvDiff = (time() - $hash->{LAST_RECV});
   my $updateInt = main::AttrVal($name,'updateTimeout',120);
   
-  # give it 20% tolerance. sticking hard to updateInt might fail if the fhem timer gets delayed for some seconds
+  # give it 20% tolerance. 
   if ($lastRecvDiff > ($updateInt * 1.2)) {
-    main::Log3 $name, 3, "CheckConnection: Connection lost! Last data from sensor received $lastRecvDiff s ago";
+    main::Log3 $name, 3, "$name: Connection lost! Last data from sensor received $lastRecvDiff s ago";
     main::DevIo_Disconnected($hash);
 	#Setting state "disconnected" does not create an event in DevIo
 	main::readingsSingleUpdate($hash,"state",'disconnected', 1);
     return undef;
   }
-  main::Log3 $name, 4, "Connection still alive. Last data from co2mini received $lastRecvDiff s ago";
+  main::Log3 $name, 4, "$name: Connection still alive. Last data from co2mini received $lastRecvDiff s ago";
   
   queueConnectionCheck($hash);
 }
@@ -320,6 +333,7 @@ sub serverGetPid($$) {
 
 sub serverStart($) {
 	my ($hash) = @_;
+	my $name = $hash->{NAME};
 	
 	delete $hash->{ServerPID};
 	
@@ -327,20 +341,22 @@ sub serverStart($) {
 	my $pid = serverGetPid($hash, $hash->{commandLine});
 	# Is a process with this command line already running? If yes then use this.
 	if($pid && kill(0, $pid)) {
-		main::Log3($hash, 1, 'Server already running with PID ' . $pid. '. We are using this process.');
+		main::Log3($hash, 4, "$name: Server already running with PID " . $pid. '. We are using this process.');
 		$hash->{ServerPID} = $pid;
-		#InternalTimer(gettimeofday() + 0.1, 'HM485_LAN_openDev', $hash, 0);		
+		$hash->{ServerStartTime} = time() unless $hash->{ServerStartTime};	
 		return 'Server already running. (Re)Connected to PID '.$pid;
 	};		
 	#...otherwise try to start server
 	system($hash->{commandLine} . '&');
-	main::Log3($hash, 3, 'Start server with command line: ' . $hash->{commandLine});
+	main::Log3($hash, 3, "$name: Start server with command line: " . $hash->{commandLine});
 	$pid = serverGetPid($hash, $hash->{commandLine});
 	if(!$pid) {
+		delete $hash->{ServerStartTime};
 		return 'Server could not be started';
 	}
 	$hash->{ServerPID} = $pid;
-	main::Log3($hash, 3, 'Serverd was started with PID: ' . $pid);
+	$hash->{ServerStartTime} = time();
+	main::Log3($hash, 3, "$name: Server was started with PID: " . $pid);
 	$hash->{ServerSTATE} = 'started';
 	return 'Server started with PID '.$pid;
 }
@@ -356,16 +372,18 @@ sub serverStop($) {
 
 	# Is there a process with the pid?
 	if(!kill(0, $pid)) {
-		main::Log3($name, 1, 'There is no server process with PID ' . $pid . '.');	
+		main::Log3($name, 1, "$name: There is no server process with PID " . $pid . '.');	
 		return undef;
 	};	
 	if(!kill('TERM', $pid)) {
-		main::Log3($name, 1, 'Can\'t terminate server with PID ' . $pid . '.');
+		main::Log3($name, 1, "$name: Can't terminate server with PID " . $pid . '.');
 		return undef;
 	};	
 	$hash->{ServerSTATE} = 'stopped';
-	delete($hash->{ServerPID});
-	main::Log3($name, 3, 'HM485d with PID ' . $pid . ' was terminated.');
+	delete $hash->{ServerPID};
+	delete $hash->{ServerStartTime};
+
+	main::Log3($name, 3, "$name: Server with PID " . $pid . ' was terminated.');
 	return undef;
 };
 
@@ -404,13 +422,21 @@ sub serverStop($) {
     <ul>
 	<li>
       <code>define co2 co2mini</code><br>
-	  This means that the device is directly connected to the same server and the device name is /dev/co2mini0.
+	  This means that the device is directly connected to the same server and the device name is /dev/co2mini0. The co2mini module will then automatically start the co2mini server. 
+	</li>
+	<li>
+      <code>define co2 co2mini /dev/co2mini5</code><br>
+	  This means that the device is directly connected to the same server and the device name is /dev/co2mini5. The co2mini module will then automatically start the co2mini server.
 	</li>
 	<li>
       <code>define co2 co2mini raspberry:23231</code><br>
-	  This connects to a server with the name "raspberry" where the co2mini server listens to port 23231. I.e. the server has been started with <tt>perl co2mini_server.pl -port=23231</tt>
+	  This connects to a server with the name "raspberry" where the co2mini server listens to port 23231. I.e. the server has to be started with <tt>perl co2mini_server.pl -port=23231</tt> manually or by some other script on the server named "raspberry".
 	</li>  
-  </ul><br>
+  </ul>
+  <br>
+  The arguments can be overriden using the attributes <tt>device</tt>, <tt>serverControl</tt>, <tt>serverIp</tt> and <tt>serverPort</tt>.
+  <br><br>
+  </ul>
 
   <a id="co2mini-readings"><b>Readings</b></a>
   <dl>
@@ -425,7 +451,7 @@ sub serverStop($) {
       If set to 1, the device is disconnected.
 	</li>
     <li><a id="co2mini-attr-updateTimeout">updateTimeout</a><br>
-	If there is no update from the co2mini server after <tt>updateTimeout</tt> seconds, the module disconnects and connects again. The default value is 120 seconds.
+	If there is no update from the co2mini server after <tt>updateTimeout</tt> seconds, the module disconnects and connects again. The default value is 120 seconds. Normally, the server only sends data every minute, so the updateTimeout should be greater than that.
 	</li>
 	<li><a id="co2mini-attr-device">device</a><br>
 	This is the device node, like /dev/co2mini0. It only needs to be set if FHEM controls the co2mini server. Also see the attribute <tt>serverControl</tt>.
@@ -435,10 +461,13 @@ sub serverStop($) {
 	   If this attribute is set to "external", then the co2mini module expects that the co2mini server is already running on the same server or on a remote server. In the latter case, the attribute <tt>serverIp</tt> has to be set accordingly. 
 	</li>
 	<li><a id="co2mini-attr-serverIp">serverIp</a><br>
-	   This is the address of the computer where the co2mini server is running on.
+	   This is the address of the computer where the co2mini server is running on. 
 	</li>
 	   <li><a id="co2mini-attr-serverPort">serverPort</a><br>
-	   This is the port the co2mini server listens to. 
+	   This is the port the co2mini server listens to. If <tt>serverControl</tt> is "fhem", then this can also be set to change the port which is used. I.e. the co2mini module will start the server with this port.
+	</li>
+	<li><a id="co2mini-attr-serverStartDelay">serverStartDelay</a><br>
+	   If <tt>serverControl</tt> is "fhem", then the module waits for at least <tt>serverStartDelay</tt> seconds until it tried to connect to the server. The default value is 3 seconds. Higher values can lead to faster connection on slower systems, lower values might be ok on faster systems. If you have the impression that it takes long to connect, then try higher values first.
 	</li>
 
   </ul>
