@@ -40,7 +40,7 @@ sub Define($$)
 	my $addr;
 	my $control = 'fhem';
   
-	if(@a < 2) {
+	if(@a < 3) {
 		#Nothing given, assume defaults
 		$dev = '/dev/co2mini0';
 		$addr = '127.0.0.1:41042';
@@ -74,7 +74,7 @@ sub OnConnect($)
   my ($hash) = @_;
   my $name   = $hash->{NAME};
   main::Log3 $name, 3, "$name: OnConnect";
-
+  main::readingsSingleUpdate($hash,"state",'opened', 1);
   $hash->{LAST_RECV} = time();
   queueConnectionCheck($hash);
 }
