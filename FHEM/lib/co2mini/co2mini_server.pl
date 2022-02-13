@@ -100,6 +100,11 @@ sub mainloop {
 				
 				log2(4,"Received data from $device");
 				
+				if($verbose >= 5) {
+					my( $hex ) = unpack( 'H*', $buf );
+					log2(5,"Received data: ".$hex);
+				};	
+				
 				my @data = map { ord } split //, $buf;
                 if($data[4] != 0xd or (($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
 					#Maybe this is an older sensor with encryption. Try this...
@@ -112,9 +117,13 @@ sub mainloop {
 				
 				#Ignore stuff we cannot interpret
 				#42 - Temperature
-				#44 - Humidity
+				#41 or 44 - Humidity
 				#50 - CO2
-				next unless($data[0] == 0x42 or $data[0] == 0x44 or $data[0] == 0x50);
+				#It is not really clear whether the code for humidity is 0x41 or 0x44
+				#the original version of this module had 0x44, but it seems that there
+				#is at least one device out there sending the humidity with 0x41
+				next unless($data[0] == 0x42 or $data[0] == 0x41 
+							or $data[0] == 0x44 or $data[0] == 0x50);
 				
 				#Check/store send interval by message type
 				$now = time();

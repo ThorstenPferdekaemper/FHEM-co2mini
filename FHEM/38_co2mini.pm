@@ -142,7 +142,7 @@ sub updateData($$@)
     return;
   }
   elsif((($data[0] + $data[1] + $data[2]) & 0xff) != $data[3]) {
-    main::Log3 $name, 3, "$name: checksum error";
+    main::Log3 $name, 3, "$name: checksum error ".sprintf("%X%X%X%X",$data[0],$data[1],$data[2],$data[3]);
     return;
   }
 
@@ -155,7 +155,10 @@ sub updateData($$@)
   } elsif($item == 0x42) {
     main::readingsBulkUpdate($hash, "temperature", $value/16.0 - 273.15);
 	$hash->{LAST_RECV} = time();
-  } elsif($item == 0x44) {
+  } elsif($item == 0x41 or $item == 0x44) {
+	#It is not really clear whether the code for humidity is 0x41 or 0x44
+	#the original version of this module had 0x44, but it seems that there
+	#is at least one device out there sending the humidity with 0x41
     main::readingsBulkUpdate($hash, "humidity", $value/100.0);
 	$hash->{LAST_RECV} = time();
   }
@@ -442,7 +445,7 @@ sub serverStop($) {
   <dl>
   <dt>co2</dt><dd>CO2 measurement from the device, in ppm</dd>
   <dt>temperature</dt><dd>Temperature measurement from the device, in °C</dd>
-  <dt>humidity</dt><dd>Humidity measurement from the device, in % (This may not be available on your device.)</dd>
+  <dt>humidity</dt><dd>Humidity measurement from the device, in %. Your device might not have a humidity sensor. In this case, the humidity is always 0 (zero).</dd>
   </dl>
 
   <a id="co2mini-attr"><b>Attributes</b></a>
